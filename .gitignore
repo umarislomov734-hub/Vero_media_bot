@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+bot_log.txt
+backups/
+start.bat
+_docs/
