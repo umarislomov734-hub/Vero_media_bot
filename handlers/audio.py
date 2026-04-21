@@ -1,6 +1,9 @@
+import logging
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
+
+log = logging.getLogger(__name__)
 
 from ai.transcriber import transcribe_from_telegram
 from ai.task_parser import parse_tasks_from_text, parse_comment, parse_meeting_protocol
