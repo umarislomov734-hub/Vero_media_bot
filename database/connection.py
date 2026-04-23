@@ -21,12 +21,7 @@ async def create_pool() -> None:
     for attempt in range(1, _MAX_RETRY + 1):
         try:
             db_url = os.getenv("DATABASE_URL", "")
-            if "localhost" in db_url or "127.0.0.1" in db_url:
-                ssl_ctx = False
-            else:
-                ssl_ctx = ssl.create_default_context()
-                ssl_ctx.check_hostname = False
-                ssl_ctx.verify_mode = ssl.CERT_NONE
+            ssl_ctx = False  # Railway proxy handles SSL at TCP level
             _pool = await asyncpg.create_pool(
                 dsn=db_url,
                 ssl=ssl_ctx,
