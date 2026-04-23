@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import ssl
 
 import asyncpg
 from dotenv import load_dotenv
@@ -20,10 +21,15 @@ async def create_pool() -> None:
     for attempt in range(1, _MAX_RETRY + 1):
         try:
             db_url = os.getenv("DATABASE_URL", "")
-            ssl = "disable" if "localhost" in db_url or "127.0.0.1" in db_url else True
+            if "localhost" in db_url or "127.0.0.1" in db_url:
+                ssl_ctx = False
+            else:
+                ssl_ctx = ssl.create_default_context()
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = ssl.CERT_NONE
             _pool = await asyncpg.create_pool(
                 dsn=db_url,
-                ssl=ssl,
+                ssl=ssl_ctx,
                 min_size=2,
                 max_size=10,
                 command_timeout=30,
