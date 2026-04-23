@@ -1,7 +1,7 @@
 import os
 import json
 import re
-from anthropic import AsyncAnthropic
+from groq import AsyncGroq
 from dotenv import load_dotenv
 from datetime import datetime
 import pytz
@@ -11,10 +11,10 @@ load_dotenv()
 _client = None
 
 
-def _get_client() -> AsyncAnthropic:
+def _get_client() -> AsyncGroq:
     global _client
     if _client is None:
-        _client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        _client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
     return _client
 TZ = pytz.timezone(os.getenv("TIMEZONE", "Asia/Tashkent"))
 
@@ -90,7 +90,7 @@ async def parse_tasks_from_text(
     members_info = ""
     if team_members:
         members_list = "\n".join(
-            "  - " + m['full_name'] + " (" + m.get('position', 'noma\'lum') + ")"
+            "  - " + (m['full_name'] or '?') + " (" + (m.get('position') or 'noma\'lum') + ")"
             for m in team_members
         )
         members_info = f"\n\nJAMOA A'ZOLARI (ismlar shu ro'yxatdan mos keltirilsin):\n{members_list}"
@@ -103,14 +103,16 @@ TRANSKRIPSIYA MATNI:
 
 Ushbu matndan barcha vazifalarni ajratib, JSON formatida qaytir."""
 
-    response = await _get_client().messages.create(
-        model="claude-sonnet-4-5",
+    response = await _get_client().chat.completions.create(
+        model="llama-3.3-70b-versatile",
         max_tokens=2000,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}]
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_message}
+        ]
     )
 
-    raw_json = response.content[0].text.strip()
+    raw_json = response.choices[0].message.content.strip()
 
     # JSON ni tozalash
     raw_json = re.sub(r"```json|```", "", raw_json).strip()
@@ -168,7 +170,7 @@ async def parse_meeting_protocol(
     members_info = ""
     if team_members:
         members_list = "\n".join(
-            "  - " + m['full_name'] + " (" + m.get('position', 'noma\'lum') + ")"
+            "  - " + (m['full_name'] or '?') + " (" + (m.get('position') or 'noma\'lum') + ")"
             for m in team_members
         )
         members_info = f"\nJAMOA A'ZOLARI:\n{members_list}"
@@ -181,14 +183,16 @@ YIGʻILISH TRANSKRIPSIYASI:
 
 Protokol va vazifalarni JSON formatida qaytir."""
 
-    response = await _get_client().messages.create(
-        model="claude-sonnet-4-5",
+    response = await _get_client().chat.completions.create(
+        model="llama-3.3-70b-versatile",
         max_tokens=2000,
-        system=MEETING_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}]
+        messages=[
+            {"role": "system", "content": MEETING_SYSTEM_PROMPT},
+            {"role": "user", "content": user_message}
+        ]
     )
 
-    raw_json = response.content[0].text.strip()
+    raw_json = response.choices[0].message.content.strip()
     raw_json = re.sub(r"```json|```", "", raw_json).strip()
 
     try:
@@ -229,14 +233,16 @@ JAVOB FORMATI — faqat sof JSON:
 async def parse_comment(raw_text: str) -> dict:
     """Audio izohni tahlil qiladi va turini aniqlaydi."""
 
-    response = await _get_client().messages.create(
-        model="claude-sonnet-4-5",
+    response = await _get_client().chat.completions.create(
+        model="llama-3.3-70b-versatile",
         max_tokens=500,
-        system=COMMENT_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": raw_text}]
+        messages=[
+            {"role": "system", "content": COMMENT_SYSTEM_PROMPT},
+            {"role": "user", "content": raw_text}
+        ]
     )
 
-    raw_json = response.content[0].text.strip()
+    raw_json = response.choices[0].message.content.strip()
     raw_json = re.sub(r"```json|```", "", raw_json).strip()
 
     try:

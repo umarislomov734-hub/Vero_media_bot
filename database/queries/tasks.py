@@ -1,4 +1,28 @@
+import json
+import logging
 from database.connection import get_pool
+
+log = logging.getLogger(__name__)
+
+# Allowlists — f-string injection ni oldini olish
+VALID_STATUS = frozenset({"yangi", "jarayonda", "bajarildi", "kechikdi", "qaytarildi", "bekor_qilindi"})
+VALID_REMIND_FIELDS = frozenset({"reminded_3d", "reminded_1d"})
+VALID_TASK_FIELDS = frozenset({"title", "deadline", "priority", "description", "status"})
+
+# SQL snippets for status filter (no f-string interpolation of user values)
+_ACTIVE_WHERE = "t.status NOT IN ('bajarildi','bekor_qilindi')"
+_BASE_TASK_SELECT = (
+    "SELECT t.*, t.priority::text as priority, t.status::text as status, "
+    "t.task_type::text as task_type, t.source::text as source, "
+    "u.full_name as assignee_name, c.full_name as creator_name "
+    "FROM tasks t "
+    "LEFT JOIN users u ON t.assigned_to=u.id "
+    "LEFT JOIN users c ON t.created_by=c.id "
+)
+_ORDER_PRIORITY = (
+    "ORDER BY CASE t.priority WHEN 'yuqori' THEN 1 WHEN 'orta' THEN 2 ELSE 3 END, "
+    "t.deadline NULLS LAST"
+)
 
 
 async def create_task(
@@ -30,78 +54,133 @@ async def create_task(
 
 
 async def create_task_bulk(tasks: list[dict], created_by: int) -> list[dict]:
-    results = []
-    for t in tasks:
-        row = await create_task(
-            title=t.get("title", ""),
-            description=t.get("description"),
-            assigned_to=t["assigned_to"],
-            created_by=created_by,
-            task_type=t.get("task_type", "birmartalik"),
-            priority=t.get("priority", "orta"),
-            source=t.get("source", "audio"),
-            deadline=t.get("deadline"),
+    if not tasks:
+        return []
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "INSERT INTO tasks "
+            "(title, description, assigned_to, created_by, task_type, priority, status, source, deadline) "
+            "SELECT "
+            "  unnest($1::text[]), unnest($2::text[]), unnest($3::int[]), $4, "
+            "  unnest($5::task_type[]), unnest($6::task_priority[]), 'yangi', "
+            "  unnest($7::task_source[]), unnest($8::timestamptz[]) "
+            "RETURNING *",
+            [t.get("title", "") for t in tasks],
+            [t.get("description") for t in tasks],
+            [t["assigned_to"] for t in tasks],
+            created_by,
+            [t.get("task_type", "birmartalik") for t in tasks],
+            [t.get("priority", "orta") for t in tasks],
+            [t.get("source", "audio") for t in tasks],
+            [t.get("deadline") for t in tasks],
         )
-        results.append(row)
-    return results
+    return [dict(r) for r in rows]
 
 
 async def get_task(task_id: int) -> dict | None:
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT t.*, t.priority::text as priority, t.status::text as status, "
-            "t.task_type::text as task_type, t.source::text as source, "
-            "u.full_name as assignee_name, c.full_name as creator_name "
-            "FROM tasks t "
-            "LEFT JOIN users u ON t.assigned_to=u.id "
-            "LEFT JOIN users c ON t.created_by=c.id "
-            "WHERE t.id=$1",
+            _BASE_TASK_SELECT + "WHERE t.id=$1",
             task_id
         )
     return dict(row) if row else None
 
 
-async def get_tasks_by_user(user_id: int, status_filter: str = "active") -> list[dict]:
+async def get_tasks_by_user(
+    user_id: int,
+    status_filter: str = "active",
+    offset: int = 0,
+    limit: int = 0,
+) -> list[dict]:
     pool = await get_pool()
-    if status_filter in ("bajarildi", "kechikdi", "qaytarildi", "yangi", "jarayonda"):
-        where = f"t.assigned_to=$1 AND t.status='{status_filter}'"
-    elif status_filter == "yuqori_priority":
-        where = "t.assigned_to=$1 AND t.priority='yuqori' AND t.status NOT IN ('bajarildi','bekor_qilindi')"
-    else:
-        where = "t.assigned_to=$1 AND t.status NOT IN ('bajarildi','bekor_qilindi')"
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT t.*, t.priority::text as priority, t.status::text as status, "
-            "t.task_type::text as task_type, "
-            "u.full_name as assignee_name, c.full_name as creator_name "
-            "FROM tasks t "
-            "LEFT JOIN users u ON t.assigned_to=u.id "
-            "LEFT JOIN users c ON t.created_by=c.id "
-            f"WHERE {where} "
-            "ORDER BY CASE t.priority WHEN 'yuqori' THEN 1 WHEN 'orta' THEN 2 ELSE 3 END, "
-            "t.deadline NULLS LAST",
-            user_id
+    # Allowlisted branches — no user value interpolated into SQL
+    if status_filter in VALID_STATUS:
+        sql = (
+            _BASE_TASK_SELECT
+            + "WHERE t.assigned_to=$1 AND t.status=$2::task_status "
+            + _ORDER_PRIORITY
         )
+        args = [user_id, status_filter]
+    elif status_filter == "yuqori_priority":
+        sql = (
+            _BASE_TASK_SELECT
+            + "WHERE t.assigned_to=$1 AND t.priority='yuqori' AND " + _ACTIVE_WHERE + " "
+            + _ORDER_PRIORITY
+        )
+        args = [user_id]
+    else:
+        sql = _BASE_TASK_SELECT + "WHERE t.assigned_to=$1 AND " + _ACTIVE_WHERE + " " + _ORDER_PRIORITY
+        args = [user_id]
+
+    if limit > 0:
+        sql += f" LIMIT ${len(args)+1} OFFSET ${len(args)+2}"
+        args += [limit, offset]
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *args)
     return [dict(r) for r in rows]
 
 
-async def get_all_tasks(status_filter: str = "active") -> list[dict]:
+async def count_tasks_by_user(user_id: int, status_filter: str = "active") -> int:
     pool = await get_pool()
-    if status_filter in ("bajarildi", "kechikdi", "qaytarildi", "yangi", "jarayonda"):
-        where = f"t.status = '{status_filter}'"
+    if status_filter in VALID_STATUS:
+        sql = "SELECT COUNT(*) FROM tasks WHERE assigned_to=$1 AND status=$2::task_status"
+        args = [user_id, status_filter]
     elif status_filter == "yuqori_priority":
-        where = "t.priority='yuqori' AND t.status NOT IN ('bajarildi','bekor_qilindi')"
+        sql = "SELECT COUNT(*) FROM tasks WHERE assigned_to=$1 AND priority='yuqori' AND " + _ACTIVE_WHERE
+        args = [user_id]
     else:
-        where = "t.status NOT IN ('bajarildi','bekor_qilindi')"
+        sql = "SELECT COUNT(*) FROM tasks WHERE assigned_to=$1 AND " + _ACTIVE_WHERE
+        args = [user_id]
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT t.*, t.priority::text as priority, t.status::text as status, "
-            "u.full_name as assignee_name "
-            f"FROM tasks t LEFT JOIN users u ON t.assigned_to=u.id "
-            f"WHERE {where} ORDER BY t.deadline NULLS LAST"
-        )
+        return await conn.fetchval(sql, *args)
+
+
+async def get_all_tasks(
+    status_filter: str = "active",
+    offset: int = 0,
+    limit: int = 0,
+) -> list[dict]:
+    pool = await get_pool()
+    select = (
+        "SELECT t.*, t.priority::text as priority, t.status::text as status, "
+        "u.full_name as assignee_name "
+        "FROM tasks t LEFT JOIN users u ON t.assigned_to=u.id "
+    )
+    if status_filter in VALID_STATUS:
+        sql = select + "WHERE t.status=$1::task_status ORDER BY t.deadline NULLS LAST"
+        args: list = [status_filter]
+    elif status_filter == "yuqori_priority":
+        sql = select + "WHERE t.priority='yuqori' AND " + _ACTIVE_WHERE + " ORDER BY t.deadline NULLS LAST"
+        args = []
+    else:
+        sql = select + "WHERE " + _ACTIVE_WHERE + " ORDER BY t.deadline NULLS LAST"
+        args = []
+
+    if limit > 0:
+        sql += f" LIMIT ${len(args)+1} OFFSET ${len(args)+2}"
+        args += [limit, offset]
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *args)
     return [dict(r) for r in rows]
+
+
+async def count_all_tasks(status_filter: str = "active") -> int:
+    pool = await get_pool()
+    if status_filter in VALID_STATUS:
+        sql = "SELECT COUNT(*) FROM tasks WHERE status=$1::task_status"
+        args: list = [status_filter]
+    elif status_filter == "yuqori_priority":
+        sql = "SELECT COUNT(*) FROM tasks WHERE priority='yuqori' AND " + _ACTIVE_WHERE
+        args = []
+    else:
+        sql = "SELECT COUNT(*) FROM tasks WHERE " + _ACTIVE_WHERE
+        args = []
+    async with pool.acquire() as conn:
+        return await conn.fetchval(sql, *args)
 
 
 async def get_task_comments(task_id: int, limit: int = 10) -> list[dict]:
@@ -135,6 +214,22 @@ async def return_task(task_id: int, reason: str) -> None:
             "return_reason=$2, updated_at=NOW() WHERE id=$1",
             task_id, reason
         )
+
+
+async def update_task_field(task_id: int, field: str, value) -> None:
+    if field not in VALID_TASK_FIELDS:
+        raise ValueError(f"Noto'g'ri maydon: {field}")
+    pool = await get_pool()
+    # Each field has its own safe SQL — no f-string with user value
+    field_sql = {
+        "title":       "UPDATE tasks SET title=$2, updated_at=NOW() WHERE id=$1",
+        "deadline":    "UPDATE tasks SET deadline=$2, updated_at=NOW() WHERE id=$1",
+        "priority":    "UPDATE tasks SET priority=$2::task_priority, updated_at=NOW() WHERE id=$1",
+        "description": "UPDATE tasks SET description=$2, updated_at=NOW() WHERE id=$1",
+        "status":      "UPDATE tasks SET status=$2::task_status, updated_at=NOW() WHERE id=$1",
+    }
+    async with pool.acquire() as conn:
+        await conn.execute(field_sql[field], task_id, value)
 
 
 async def add_comment(
@@ -186,17 +281,20 @@ async def get_tasks_due_today(user_id: int) -> list[dict]:
 
 
 async def get_tasks_due_in_days(user_id: int, days: int, remind_field: str) -> list[dict]:
-    pool = await get_pool()
+    if remind_field not in VALID_REMIND_FIELDS:
+        raise ValueError(f"Noto'g'ri remind_field: {remind_field}")
     col = "reminded_3d" if remind_field == "reminded_3d" else "reminded_1d"
+    pool = await get_pool()
+    # col is always one of two safe values — not user input
+    sql = (
+        f"SELECT t.*, t.priority::text as priority FROM tasks t "
+        f"WHERE t.assigned_to=$1 "
+        f"AND t.status NOT IN ('bajarildi','bekor_qilindi') "
+        f"AND t.deadline::date = (CURRENT_DATE + $2 * INTERVAL '1 day')::date "
+        f"AND t.{col} = FALSE"
+    )
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            f"SELECT t.*, t.priority::text as priority FROM tasks t "
-            f"WHERE t.assigned_to=$1 "
-            f"AND t.status NOT IN ('bajarildi','bekor_qilindi') "
-            f"AND t.deadline::date = (CURRENT_DATE + $2 * INTERVAL '1 day')::date "
-            f"AND t.{col} = FALSE",
-            user_id, days
-        )
+        rows = await conn.fetch(sql, user_id, days)
     return [dict(r) for r in rows]
 
 
@@ -213,12 +311,107 @@ async def get_overdue_tasks(user_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-async def mark_reminded(task_id: int, field: str) -> None:
+# ─── SCHEDULER BATCH QUERIES (N+1 ni yo'q qiladi) ────────────────────────────
+
+async def get_member_task_summary(member_ids: list[int]) -> dict[int, dict]:
+    """Barcha a'zolar uchun bitta query — scheduler N+1 o'rniga."""
+    if not member_ids:
+        return {}
     pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                t.assigned_to,
+                array_agg(t.*) FILTER (
+                    WHERE t.deadline::date = CURRENT_DATE
+                    AND t.status NOT IN ('bajarildi','bekor_qilindi')
+                ) as today_tasks,
+                array_agg(t.*) FILTER (
+                    WHERE t.deadline::date = CURRENT_DATE + INTERVAL '1 day'
+                    AND t.status NOT IN ('bajarildi','bekor_qilindi')
+                ) as tomorrow_tasks,
+                array_agg(t.*) FILTER (
+                    WHERE t.deadline < NOW()
+                    AND t.status NOT IN ('bajarildi','bekor_qilindi')
+                ) as overdue_tasks
+            FROM tasks t
+            WHERE t.assigned_to = ANY($1::int[])
+            GROUP BY t.assigned_to
+            """,
+            member_ids
+        )
+    result: dict[int, dict] = {}
+    for r in rows:
+        r_dict = dict(r)
+        result[r_dict["assigned_to"]] = {
+            "today":    r_dict.get("today_tasks") or [],
+            "tomorrow": r_dict.get("tomorrow_tasks") or [],
+            "overdue":  r_dict.get("overdue_tasks") or [],
+        }
+    return result
+
+
+async def get_tasks_needing_reminder(days: int, field: str) -> list[dict]:
+    """Barcha a'zolar uchun deadline eslatma kerak bo'lgan tasklarni bitta query."""
+    if field not in VALID_REMIND_FIELDS:
+        raise ValueError(f"Noto'g'ri field: {field}")
     col = "reminded_3d" if field == "reminded_3d" else "reminded_1d"
+    sql = (
+        f"SELECT t.*, t.priority::text as priority, "
+        f"u.telegram_id as user_telegram_id, u.full_name as assignee_name "
+        f"FROM tasks t "
+        f"JOIN users u ON t.assigned_to=u.id "
+        f"WHERE t.status NOT IN ('bajarildi','bekor_qilindi') "
+        f"AND t.deadline::date = (CURRENT_DATE + $1 * INTERVAL '1 day')::date "
+        f"AND t.{col} = FALSE"
+    )
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, days)
+    return [dict(r) for r in rows]
+
+
+async def get_overdue_tasks_with_assignees() -> list[dict]:
+    """Kechikkan barcha tasklar va assignee telegram_id si — bitta query."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT t.*, t.priority::text as priority, "
+            "u.telegram_id as user_telegram_id, u.full_name as assignee_name "
+            "FROM tasks t "
+            "JOIN users u ON t.assigned_to=u.id "
+            "WHERE t.status NOT IN ('bajarildi','bekor_qilindi') "
+            "AND t.deadline < NOW()"
+        )
+    return [dict(r) for r in rows]
+
+
+async def mark_reminded(task_id: int, field: str) -> None:
+    if field not in VALID_REMIND_FIELDS:
+        raise ValueError(f"Noto'g'ri field: {field}")
+    col = "reminded_3d" if field == "reminded_3d" else "reminded_1d"
+    pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(f"UPDATE tasks SET {col}=TRUE WHERE id=$1", task_id)
 
+
+async def mark_reminded_bulk(task_ids: list[int], field: str) -> None:
+    """Ko'p tasklarni bir vaqtda update qilish."""
+    if not task_ids:
+        return
+    if field not in VALID_REMIND_FIELDS:
+        raise ValueError(f"Noto'g'ri field: {field}")
+    col = "reminded_3d" if field == "reminded_3d" else "reminded_1d"
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            f"UPDATE tasks SET {col}=TRUE WHERE id = ANY($1::int[])",
+            task_ids
+        )
+
+
+# ─── Remaining functions (unchanged) ─────────────────────────────────────────
 
 async def get_recurring_tasks() -> list[dict]:
     pool = await get_pool()
@@ -373,7 +566,6 @@ async def save_meeting_log(
 ) -> int:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        import json
         row = await conn.fetchrow(
             "INSERT INTO meeting_logs (chat_id, audio_file_id, protocol_text, decisions, recorded_by) "
             "VALUES ($1,$2,$3,$4::jsonb,$5) RETURNING id",

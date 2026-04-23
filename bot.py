@@ -17,6 +17,7 @@ from handlers.tasks import complete as task_complete
 from handlers import projects, stats, growth, meeting, archive, publish
 from middlewares.auth import AuthMiddleware
 from middlewares.logger import LoggerMiddleware
+from middlewares.error import ErrorMiddleware
 from utils.scheduler import start_scheduler
 
 load_dotenv()
@@ -94,6 +95,8 @@ async def main():
 
     await create_pool()
 
+    dp.message.middleware(ErrorMiddleware())
+    dp.callback_query.middleware(ErrorMiddleware())
     dp.message.middleware(LoggerMiddleware())
     dp.message.middleware(AuthMiddleware())
     dp.callback_query.middleware(AuthMiddleware())

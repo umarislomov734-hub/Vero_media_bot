@@ -8,9 +8,8 @@ from aiogram.fsm.state import State, StatesGroup
 from database.queries.users import get_user_by_telegram_id, get_managers
 from database.queries.tasks import (
     get_task, complete_task, return_task,
-    add_comment, add_task_file
+    add_comment, add_task_file, update_task_field,
 )
-from database.connection import get_pool
 
 router = Router()
 
@@ -373,32 +372,28 @@ async def save_edit_value(message: Message, state: FSMContext):
     task_id = data["edit_task_id"]
     field   = data["edit_field"]
 
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        if field == "title":
-            await conn.execute("UPDATE tasks SET title=$1, updated_at=NOW() WHERE id=$2",
-                               message.text.strip(), task_id)
-            await message.answer(f"✅ Sarlavha yangilandi: <b>{message.text.strip()}</b>",
+    if field == "title":
+        await update_task_field(task_id, "title", message.text.strip())
+        await message.answer(f"✅ Sarlavha yangilandi: <b>{message.text.strip()}</b>",
+                             parse_mode="HTML")
+    else:
+        from datetime import datetime
+        import pytz
+        tz = pytz.timezone("Asia/Tashkent")
+        try:
+            dl = datetime.strptime(message.text.strip(), "%d.%m.%Y %H:%M")
+            dl = tz.localize(dl)
+            await update_task_field(task_id, "deadline", dl)
+            await message.answer(f"✅ Deadline yangilandi: <b>{dl.strftime('%d.%m.%Y %H:%M')}</b>",
                                  parse_mode="HTML")
-        else:
-            from datetime import datetime
-            import pytz
-            tz = pytz.timezone("Asia/Tashkent")
-            try:
-                dl = datetime.strptime(message.text.strip(), "%d.%m.%Y %H:%M")
-                dl = tz.localize(dl)
-                await conn.execute("UPDATE tasks SET deadline=$1, updated_at=NOW() WHERE id=$2",
-                                   dl, task_id)
-                await message.answer(f"✅ Deadline yangilandi: <b>{dl.strftime('%d.%m.%Y %H:%M')}</b>",
-                                     parse_mode="HTML")
-                task = await get_task(task_id)
-                if task and task.get("assigned_to"):
-                    asyncio.create_task(_maybe_update_gcal_event(
-                        task_id, task["assigned_to"], task["title"], dl
-                    ))
-            except ValueError:
-                await message.answer("❌ Format noto'g'ri. Masalan: 25.04.2026 18:00")
-                return
+            task = await get_task(task_id)
+            if task and task.get("assigned_to"):
+                asyncio.create_task(_maybe_update_gcal_event(
+                    task_id, task["assigned_to"], task["title"], dl
+                ))
+        except ValueError:
+            await message.answer("❌ Format noto'g'ri. Masalan: 25.04.2026 18:00")
+            return
 
     await state.clear()
 

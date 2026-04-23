@@ -1,22 +1,69 @@
+import math
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+_PRIORITY_ICON = {"yuqori": "🔴", "orta": "🟡", "past": "🟢"}
+_POS_ICON = {
+    "operator":        "🎥",
+    "montajchi":       "✂️",
+    "smm":             "📱",
+    "dizayner":        "🎨",
+    "ssenarист":       "📝",
+    "kontent_menejer": "📋",
+}
+
+PAGE_SIZE = 10
+
+
+def _truncate(text: str, limit: int = 35) -> str:
+    return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
 # ── VAZIFA RO'YXATI ───────────────────────────────────────────────────────────
 
-def tasks_list_kb(tasks: list, prefix: str = "my") -> InlineKeyboardMarkup:
+def tasks_list_kb(
+    tasks: list,
+    prefix: str = "my",
+    page: int = 0,
+    total: int = 0,
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
 
-    for task in tasks[:10]:  # Max 10 ta
-        p_icon = {"yuqori": "🔴", "orta": "🟡", "past": "🟢"}.get(task["priority"], "🟡")
-        label = f"{p_icon} {task['title'][:30]}"
-        builder.button(text=label, callback_data=f"task:{task['id']}")
+    for task in tasks:
+        p_icon = _PRIORITY_ICON.get(task.get("priority", "orta"), "🟡")
+        label  = f"{p_icon} {_truncate(task.get('title', '—'))}"
+        builder.button(text=label, callback_data=f"task:{task.get('id', 0)}")
 
-    builder.button(text="🔴 Yuqori", callback_data=f"filter:{prefix}:yuqori_priority")
-    builder.button(text="⚠️ Kechikdi", callback_data=f"filter:{prefix}:kechikdi")
+    # Filter tugmalari
+    builder.button(text="🔴 Yuqori",    callback_data=f"filter:{prefix}:yuqori_priority")
+    builder.button(text="⚠️ Kechikdi",  callback_data=f"filter:{prefix}:kechikdi")
     builder.button(text="✅ Bajarildi", callback_data=f"filter:{prefix}:bajarildi")
 
-    builder.adjust(1, 1, 1, 3)
+    # Pagination
+    total_pages = math.ceil(total / PAGE_SIZE) if total > 0 else 1
+    if total_pages > 1:
+        prev_text = f"« {page}" if page > 0 else "·"
+        next_text = f"{page + 2} »" if page + 1 < total_pages else "·"
+        prev_cb   = f"page:{prefix}:{page - 1}" if page > 0 else "noop"
+        next_cb   = f"page:{prefix}:{page + 1}" if page + 1 < total_pages else "noop"
+        builder.button(text=prev_text, callback_data=prev_cb)
+        builder.button(text=f"{page + 1}/{total_pages}", callback_data="noop")
+        builder.button(text=next_text, callback_data=next_cb)
+        builder.adjust(*([1] * len(tasks)), 3, 3)
+    else:
+        builder.adjust(*([1] * len(tasks)), 3)
+
+    return builder.as_markup()
+
+
+def tasks_pagination_kb(page: int, total_pages: int, prefix: str = "my") -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    if page > 0:
+        builder.button(text=f"« {page}", callback_data=f"page:{prefix}:{page - 1}")
+    builder.button(text=f"{page + 1}/{total_pages}", callback_data="noop")
+    if page + 1 < total_pages:
+        builder.button(text=f"{page + 2} »", callback_data=f"page:{prefix}:{page + 1}")
+    builder.adjust(3)
     return builder.as_markup()
 
 
@@ -29,18 +76,23 @@ def task_detail_kb(
     status: str
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    rows: list[int] = []
 
     if is_assigned and status not in ("bajarildi", "bekor_qilindi"):
         builder.button(text="✅ Bajardim", callback_data=f"complete:{task_id}")
-        builder.button(text="💬 Izoh", callback_data=f"comment:{task_id}")
+        builder.button(text="💬 Izoh",     callback_data=f"comment:{task_id}")
+        rows.append(2)
 
     if is_manager and status not in ("bajarildi", "bekor_qilindi"):
-        builder.button(text="↩️ Qaytarish", callback_data=f"return:{task_id}")
+        builder.button(text="↩️ Qaytarish",  callback_data=f"return:{task_id}")
         builder.button(text="✏️ Tahrirlash", callback_data=f"edit:{task_id}")
-        builder.button(text="❌ Bekor", callback_data=f"cancel_task:{task_id}")
+        builder.button(text="❌ Bekor",      callback_data=f"cancel_task:{task_id}")
+        rows.append(3)
 
     builder.button(text="« Orqaga", callback_data="back_to_list")
-    builder.adjust(2, 3, 1)
+    rows.append(1)
+
+    builder.adjust(*rows)
     return builder.as_markup()
 
 
@@ -53,7 +105,7 @@ def confirm_tasks_kb(count: int, prefix: str = "audio") -> InlineKeyboardMarkup:
         callback_data=f"{prefix}_confirm:{count}"
     )
     builder.button(text="✏️ Tahrirlash", callback_data=f"{prefix}_edit")
-    builder.button(text="❌ Bekor", callback_data=f"{prefix}_cancel")
+    builder.button(text="❌ Bekor",       callback_data=f"{prefix}_cancel")
     builder.adjust(1, 2)
     return builder.as_markup()
 
@@ -61,7 +113,7 @@ def confirm_tasks_kb(count: int, prefix: str = "audio") -> InlineKeyboardMarkup:
 def confirm_create_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="✅ Tasdiqlash", callback_data="create_confirm")
-    builder.button(text="❌ Bekor", callback_data="create_cancel")
+    builder.button(text="❌ Bekor",      callback_data="create_cancel")
     builder.adjust(2)
     return builder.as_markup()
 
@@ -70,20 +122,11 @@ def confirm_create_kb() -> InlineKeyboardMarkup:
 
 def members_select_kb(members: list, show_load: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    pos_icons = {
-        "operator":       "🎥",
-        "montajchi":      "✂️",
-        "smm":            "📱",
-        "dizayner":       "🎨",
-        "ssenarист":      "📝",
-        "kontent_menejer":"📋",
-    }
     for m in members:
-        icon = pos_icons.get(m.get("position", ""), "👤")
-        load = f" [{m.get('active_count', 0)}]" if show_load else ""
-        label = f"{icon} {m['full_name']}{load}"
-        builder.button(text=label, callback_data=f"assign:{m['id']}:{m['full_name']}")
-
+        icon  = _POS_ICON.get(m.get("position", ""), "👤")
+        load  = f" [{m.get('active_count', 0)}]" if show_load else ""
+        label = f"{icon} {m.get('full_name', '?')}{load}"
+        builder.button(text=label, callback_data=f"assign:{m.get('id', 0)}:{m.get('full_name', '')}")
     builder.adjust(2)
     return builder.as_markup()
 
@@ -103,9 +146,9 @@ def priority_kb() -> InlineKeyboardMarkup:
 
 def task_type_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="🎬 Loyiha",     callback_data="type:loyiha")
+    builder.button(text="🎬 Loyiha",      callback_data="type:loyiha")
     builder.button(text="⚡ Birmartalik", callback_data="type:birmartalik")
-    builder.button(text="🔁 Rutiniy",    callback_data="type:rutiniy")
+    builder.button(text="🔁 Rutiniy",     callback_data="type:rutiniy")
     builder.adjust(3)
     return builder.as_markup()
 
@@ -114,15 +157,8 @@ def task_type_kb() -> InlineKeyboardMarkup:
 
 def confirm_join_kb(telegram_id: int, full_name: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    for role, label in [
-        ("member", "🟢 Member"),
-        ("pm",     "🟠 PM"),
-        ("ad",     "🟠 AD"),
-    ]:
-        builder.button(
-            text=label,
-            callback_data=f"join_accept:{telegram_id}:{role}"
-        )
+    for role, label in [("member", "🟢 Member"), ("pm", "🟠 PM"), ("ad", "🟠 AD")]:
+        builder.button(text=label, callback_data=f"join_accept:{telegram_id}:{role}")
     builder.button(text="❌ Rad etish", callback_data=f"join_reject:{telegram_id}")
     builder.adjust(3, 1)
     return builder.as_markup()
@@ -141,9 +177,9 @@ def archive_search_kb() -> InlineKeyboardMarkup:
 
 def tasks_filter_kb(prefix: str = "my") -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="🔄 Faol",    callback_data=f"filter:{prefix}:active")
-    builder.button(text="✅ Bajarildi", callback_data=f"filter:{prefix}:bajarildi")
-    builder.button(text="⚠️ Kechikdi", callback_data=f"filter:{prefix}:kechikdi")
+    builder.button(text="🔄 Faol",        callback_data=f"filter:{prefix}:active")
+    builder.button(text="✅ Bajarildi",   callback_data=f"filter:{prefix}:bajarildi")
+    builder.button(text="⚠️ Kechikdi",   callback_data=f"filter:{prefix}:kechikdi")
     builder.button(text="↩️ Qaytarildi", callback_data=f"filter:{prefix}:qaytarildi")
     builder.adjust(2, 2)
     return builder.as_markup()
@@ -160,7 +196,7 @@ def edit_task_kb(task_index: int) -> InlineKeyboardMarkup:
 def select_project_kb(projects: list) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for p in projects:
-        builder.button(text=p["title"], callback_data=f"publish_project:{p['id']}")
+        builder.button(text=p.get("title", "?"), callback_data=f"publish_project:{p.get('id', 0)}")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -186,8 +222,8 @@ def admin_team_kb(members: list) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for m in members:
         builder.button(
-            text=f"👤 {m['full_name']}",
-            callback_data=f"admin_member:{m['id']}"
+            text=f"👤 {m.get('full_name', '?')}",
+            callback_data=f"admin_member:{m.get('id', 0)}"
         )
     builder.button(text="🔙 Orqaga", callback_data="back_admin")
     builder.adjust(1)
@@ -197,13 +233,13 @@ def admin_team_kb(members: list) -> InlineKeyboardMarkup:
 def admin_member_kb(member_id: int, current_role: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     if current_role != "pm":
-        builder.button(text="📊 PM qilish",     callback_data=f"change_role:{member_id}:pm")
+        builder.button(text="📊 PM qilish",    callback_data=f"change_role:{member_id}:pm")
     if current_role != "ad":
-        builder.button(text="🎨 AD qilish",      callback_data=f"change_role:{member_id}:ad")
+        builder.button(text="🎨 AD qilish",     callback_data=f"change_role:{member_id}:ad")
     if current_role != "member":
-        builder.button(text="👤 Member qilish",  callback_data=f"change_role:{member_id}:member")
-    builder.button(text="🚫 O'chirish",          callback_data=f"deactivate:{member_id}")
-    builder.button(text="🔙 Orqaga",             callback_data="admin_team")
+        builder.button(text="👤 Member qilish", callback_data=f"change_role:{member_id}:member")
+    builder.button(text="🚫 O'chirish", callback_data=f"deactivate:{member_id}")
+    builder.button(text="🔙 Orqaga",    callback_data="admin_team")
     builder.adjust(2, 1, 1)
     return builder.as_markup()
 
