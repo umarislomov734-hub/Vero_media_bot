@@ -129,10 +129,10 @@ async def count_tasks_by_user(user_id: int, status_filter: str = "active") -> in
         sql = "SELECT COUNT(*) FROM tasks WHERE assigned_to=$1 AND status=$2::task_status"
         args = [user_id, status_filter]
     elif status_filter == "yuqori_priority":
-        sql = "SELECT COUNT(*) FROM tasks WHERE assigned_to=$1 AND priority='yuqori' AND " + _ACTIVE_WHERE
+        sql = "SELECT COUNT(*) FROM tasks t WHERE t.assigned_to=$1 AND t.priority='yuqori' AND " + _ACTIVE_WHERE
         args = [user_id]
     else:
-        sql = "SELECT COUNT(*) FROM tasks WHERE assigned_to=$1 AND " + _ACTIVE_WHERE
+        sql = "SELECT COUNT(*) FROM tasks t WHERE t.assigned_to=$1 AND " + _ACTIVE_WHERE
         args = [user_id]
     async with pool.acquire() as conn:
         return await conn.fetchval(sql, *args)
@@ -174,10 +174,10 @@ async def count_all_tasks(status_filter: str = "active") -> int:
         sql = "SELECT COUNT(*) FROM tasks WHERE status=$1::task_status"
         args: list = [status_filter]
     elif status_filter == "yuqori_priority":
-        sql = "SELECT COUNT(*) FROM tasks WHERE priority='yuqori' AND " + _ACTIVE_WHERE
+        sql = "SELECT COUNT(*) FROM tasks t WHERE t.priority='yuqori' AND " + _ACTIVE_WHERE
         args = []
     else:
-        sql = "SELECT COUNT(*) FROM tasks WHERE " + _ACTIVE_WHERE
+        sql = "SELECT COUNT(*) FROM tasks t WHERE " + _ACTIVE_WHERE
         args = []
     async with pool.acquire() as conn:
         return await conn.fetchval(sql, *args)
